@@ -1,0 +1,67 @@
+---
+title: 'Titanic: Another modeling'
+author: "Aleksei Neverov"
+date: '13 февраля 2018 г '
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(randomForest)
+library(gbm)
+```
+
+```{r}
+#Set seed
+set.seed(753)
+
+# Load training and test datasets
+training <- read.csv("train.csv", header = TRUE)
+testing  <- read.csv("test.csv", header = TRUE)
+```
+
+```{r}
+summary(training)
+```
+
+Transforming of the training dataset
+```{r}
+#Imputing NAs into Age variable
+training$Age[is.na(training$Age)] = median(training$Age, na.rm = TRUE)
+
+summary(training)
+
+#Remove some variables
+training <- training %>%
+  dplyr::select(-Name, -Ticket, -PassengerId)
+```
+
+Split training dataset into training and validation sets:
+
+```{r}
+set.seed(123)
+inTrain <- createDataPartition(training$Survived, p = .6, list = FALSE)
+
+validation <- training[-inTrain,]
+training   <- training[inTrain,]
+```
+
+Try to use decision trees
+```{r}
+set.seed(123)
+treeModel <- train(as.factor(Survived) ~ ., data = training, method = "rpart")
+predicted <- predict(treeModel, newdata = validation)
+treeConfMtx <- confusionMatrix(predicted, as.factor(validation$Survived))
+treeConfMtx
+print(treeModel)
+plot(treeModel)
+fancyRpartPlot(treeModel$finalModel, sub = "Prediction tree")
+```

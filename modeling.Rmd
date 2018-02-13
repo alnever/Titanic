@@ -1,0 +1,134 @@
+---
+title: 'Titanic: modeling'
+author: "Aleksei Neverov"
+date: '13 февраля 2018 г '
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(randomForest)
+library(gbm)
+```
+
+```{r}
+#Set seed
+set.seed(753)
+
+# Load training and test datasets
+training <- read.csv("train.csv", header = TRUE)
+testing  <- read.csv("test.csv", header = TRUE)
+```
+
+Make a modification of the training dataset
+```{r}
+training <- training %>%
+  mutate(Survived = as.factor(Survived),
+         Deck = as.factor(substr(as.character(Cabin), 0, 1)),
+         HasCabin = grepl("[0-9]+", Cabin),
+         AgeGroup = cut(Age, breaks = 5),
+         Family = SibSp + Parch, IsFamily = Family > 0) %>%
+  select(Survived, Sex, Pclass, Deck, HasCabin, AgeGroup, Family, Embarked)
+
+# Replace NAs in AgeGroup variable with new factor value
+levels(training$AgeGroup) <- c( levels(training$AgeGroup), "Missing")
+training$AgeGroup[is.na(training$AgeGroup)] <- "Missing"
+
+summary(training)
+```
+
+Split training dataset into training and validation sets:
+
+```{r}
+set.seed(123)
+inTrain <- createDataPartition(training$Survived, p = .6, list = FALSE)
+
+validation <- training[-inTrain,]
+training   <- training[inTrain,]
+```
+
+Try to use decision trees
+```{r}
+set.seed(123)
+treeModel <- train(Survived ~ ., data = training, method = "rpart")
+predicted <- predict(treeModel, newdata = validation)
+treeConfMtx <- confusionMatrix(predicted, validation$Survived)
+treeConfMtx
+print(treeModel)
+plot(treeModel)
+fancyRpartPlot(treeModel$finalModel, sub = "Prediction tree")
+```
+
+Try to use random forest model as-is
+```{r}
+set.seed(123)
+rfModel <- train(Survived ~ ., data = training, method = "rf")
+predicted <- predict(rfModel, newdata = validation)
+rfConfMtx <- confusionMatrix(predicted, validation$Survived)
+rfConfMtx
+print(rfModel)
+plot(rfModel)
+```
+
+Tuning the random forest model using random search
+```{r}
+set.seed(123)
+metric <- "Accuracy"
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="random")
+mtry <- sqrt(ncol(training))
+tunegrid <- expand.grid(.mtry=mtry)
+rf_random <- train(Survived~., data=training, method="rf", metric=metric, tuneLength=15, trControl=control)
+print(rf_random)
+plot(rf_random)
+```
+
+Tuning of the rabdom forest model using grid search
+```{r}
+set.seed(123)
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+tunegrid <- expand.grid(.mtry=c(1:15))
+rf_gridsearch <- train(Survived~., data=training, method="rf", metric=metric, tuneGrid=tunegrid, trControl=control)
+print(rf_gridsearch)
+plot(rf_gridsearch)
+```
+
+Tuning using TuneRF
+```{r}
+# TuneRF
+set.seed(123)
+bestmtry <- tuneRF(training[,-1], training[,1], stepFactor=1.5, improve=1e-5, ntree=500)
+print(bestmtry)
+```
+
+Using GBM
+```{r}
+set.seed(123)
+gbmModel <- train(Survived ~ ., data = training, method = "gbm", verbose = FALSE)
+predicted <- predict(gbmModel, newdata = validation)
+gbmConfMtx <- confusionMatrix(predicted, validation$Survived)
+```
+
+Tuning GBM
+```{r}
+set.seed(123)
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+tunegrid <- expand.grid(interaction.depth = 1:5,
+                        n.trees = (1:5)*100,
+                        shrinkage = 10 ** (-1:-3),
+                        n.minobsinnode = 20)
+gbm_gridsearch <- train(Survived~Sex + Pclass + AgeGroup + Family, data=training, method="gbm", metric=metric, tuneGrid=tunegrid, trControl=control, verbose = FALSE)
+print(gbm_gridsearch)
+plot(gbm_gridsearch)
+```
+
+

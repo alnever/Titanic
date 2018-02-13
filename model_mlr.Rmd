@@ -1,0 +1,212 @@
+---
+title: 'Titanic: Modeling with MLR'
+author: "Aleksei Neverov"
+date: '13 февраля 2018 г '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(mlr)
+library(rJava)
+library(FSelector)
+library(dummies)
+```
+
+## Data Reading
+```{r}
+# Load training and test datasets
+training <- read.csv("train.csv", header = TRUE)
+testing  <- read.csv("test.csv", header = TRUE)
+```
+
+```{r}
+summary(training)
+```
+
+## Exploring Data
+```{r}
+summarizeColumns(training)
+```
+
+Convert some variables into factor variables:
+```{r}
+# training$Survived <- as.factor(training$Survived)
+# training$Pclass <- as.factor(training$Pclass)
+
+# libtesting$Pclass <- as.factor(testing$Pclass)
+
+summarizeColumns(training)
+summarizeColumns(testing)
+```
+## Imputing NAs
+```{r}
+imp_train <- impute(training, classes = list(factor = imputeMode(), integer = imputeMean(), numeric = imputeMean()), dummy.classes = c("integer","factor"), dummy.type = "numeric")
+
+imp_test <- impute(testing, classes = list(factor = imputeMode(), integer = imputeMean(), numeric = imputeMean()), dummy.classes = c("integer","factor"), dummy.type = "numeric")
+
+training <- imp_train$data
+testing  <- imp_test$data
+```
+
+```{r}
+training <- training %>%
+  mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
+         HasCabin = as.factor(grepl("[0-9]+", Cabin)),
+         AgeGroup = cut(Age, breaks = quantile(Age)),
+         Family = SibSp + Parch, 
+         IsFamily = as.factor(Family > 0)) %>%
+  dplyr::select(-PassengerId, -Name, -Ticket, -Cabin)
+
+testing <- testing %>%
+  mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
+         HasCabin = as.factor(grepl("[0-9]+", Cabin)),
+         AgeGroup = cut(Age, breaks = quantile(training$Age)),
+         Family = SibSp + Parch, 
+         IsFamily = as.factor(Family > 0)) %>%
+  dplyr::select( -Name, -Ticket, -Cabin)
+
+training <- cbind(training, 
+                  dummy(training$Deck, sep = "_"), 
+                  dummy(training$Sex, sep = "_"),
+                  dummy(training$HasCabin, sep = "_"),
+                  dummy(training$AgeGroup, sep = "_"),
+                  dummy(training$Embarked, sep = "_"),
+                  dummy(training$IsFamily, sep = "_"))
+
+
+summarizeColumns(training)
+summarizeColumns(testing)
+
+```
+
+## Create and remove features features
+```{r}
+# Additional features
+training <- training %>%
+  mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
+         HasCabin = as.factor(grepl("[0-9]+", Cabin)),
+         AgeGroup = cut(Age, breaks = 5),
+         Family = SibSp + Parch, 
+         IsFamily = as.factor(Family > 0))
+
+testing <- testing %>%
+  mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
+         HasCabin = as.factor(grepl("[0-9]+", Cabin)),
+         AgeGroup = cut(Age, breaks = 5),
+         Family = SibSp + Parch, 
+         IsFamily = as.factor(Family > 0))
+
+# Remove some featires
+training <- training %>%
+  dplyr::select(-PassengerId, -Name, -Ticket)
+
+testing_ids <- testing$PassengerId
+
+testing <- testing %>%
+  dplyr::select( -Name, -Ticket)
+testing <- testing %>%
+  mutate(Survived = factor(x = 0,levels=c("0","1")))
+
+```
+
+## Machine learning
+
+Split the training dataset:
+```{r}
+set.seed(123)
+inTrain <- createDataPartition(training$Survived, p = .6, list = FALSE)
+
+validation <- training[-inTrain,]
+training   <- training[inTrain,]
+```
+
+Create tasks:
+```{r}
+trainTask <- makeClassifTask(data = training, target = "Survived", 
+                             positive = "1", fixup.data = "no")
+validTask <- makeClassifTask(data = validation, target = "Survived", positive = "1")
+testTask  <- makeClassifTask(data = testing, target = "Survived")
+```
+
+Normalize features:
+```{r}
+trainTask <- normalizeFeatures(trainTask,method = "standardize")
+validTask <- normalizeFeatures(validTask,method = "standardize")
+
+summarizeColumns(trainTask)
+```
+
+Features importance
+```{r}
+im_feat <- generateFilterValuesData(trainTask, method = c("information.gain","chi.squared"))
+plotFilterValues(im_feat,n.show = 20)
+```
+
+## Modeling
+### Quadratic Discriminant Analysis (QDA)
+
+```{r}
+qda.learner <- makeLearner("classif.qda", predict.type = "response")
+
+qdaModel <- train(qda.learner, trainTask)
+
+qpredict <- predict(qdaModel, testTask)
+
+submit <- data.frame(PassengerId = testing$PassengerId, Survived = qpredict$data$response)
+write.csv(submit, "submit_qda.csv",row.names = F)
+  
+```
+
+
+### Decission tree
+```{r}
+# make a learner
+makeatree <- makeLearner("classif.rpart", predict.type = "response", fix.factors.prediction = FALSE)
+
+# set 3-fold cross validation
+set_cv <- makeResampleDesc("CV",iters = 3L)
+
+# Search for hyperparameters
+## minsplit  - represents the minimum number of observation in a node for a split to take place
+## minbucket - says the minimum number of observation I should keep in terminal nodes
+## cp - is the complexity parameter. The lesser it is, the tree will learn more specific relations 
+##      in the data which  might result in overfitting
+gs <- makeParamSet(
+    makeIntegerParam("minsplit",lower = 10, upper = 50),
+    makeIntegerParam("minbucket", lower = 5, upper = 50),
+    makeNumericParam("cp", lower = 0.001, upper = 0.2)
+)
+# do a grid search
+gscontrol <- makeTuneControlGrid()
+# hypertune the parameters
+stune <- tuneParams(learner = makeatree, 
+                    resampling = set_cv, 
+                    task = trainTask, 
+                    par.set = gs, 
+                    control = gscontrol, 
+                    measures = acc,
+                    show.info = FALSE)
+
+#check best parameter
+stune$x
+#cross validation result
+stune$y
+
+#using hyperparameters for modeling
+t.tree <- setHyperPars(makeatree, par.vals = stune$x)
+
+#train the model
+t.rpart <- train(t.tree, trainTask)
+getLearnerModel(t.rpart)
+
+
+#make predictions
+tpmodel_val <- predict(t.rpart, validTask)
+tpmodel <- predict(t.rpart, testTask)
+
+```
