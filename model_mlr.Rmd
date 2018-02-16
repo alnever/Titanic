@@ -15,6 +15,8 @@ library(mlr)
 library(rJava)
 library(FSelector)
 library(dummies)
+library(caret)
+library(rpart)
 ```
 
 ## Data Reading
@@ -28,21 +30,6 @@ testing  <- read.csv("test.csv", header = TRUE)
 summary(training)
 ```
 
-## Exploring Data
-```{r}
-summarizeColumns(training)
-```
-
-Convert some variables into factor variables:
-```{r}
-# training$Survived <- as.factor(training$Survived)
-# training$Pclass <- as.factor(training$Pclass)
-
-# libtesting$Pclass <- as.factor(testing$Pclass)
-
-summarizeColumns(training)
-summarizeColumns(testing)
-```
 ## Imputing NAs
 ```{r}
 imp_train <- impute(training, classes = list(factor = imputeMode(), integer = imputeMean(), numeric = imputeMean()), dummy.classes = c("integer","factor"), dummy.type = "numeric")
@@ -57,60 +44,27 @@ testing  <- imp_test$data
 training <- training %>%
   mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
          HasCabin = as.factor(grepl("[0-9]+", Cabin)),
-         AgeGroup = cut(Age, breaks = quantile(Age)),
-         Family = SibSp + Parch, 
-         IsFamily = as.factor(Family > 0)) %>%
+         IsFamily = as.factor(SibSp + Parch > 0)) %>%
   dplyr::select(-PassengerId, -Name, -Ticket, -Cabin)
 
 testing <- testing %>%
   mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
          HasCabin = as.factor(grepl("[0-9]+", Cabin)),
-         AgeGroup = cut(Age, breaks = quantile(training$Age)),
-         Family = SibSp + Parch, 
-         IsFamily = as.factor(Family > 0)) %>%
+         IsFamily = as.factor(SibSp + Parch > 0)) %>%
   dplyr::select( -Name, -Ticket, -Cabin)
 
-training <- cbind(training, 
-                  dummy(training$Deck, sep = "_"), 
-                  dummy(training$Sex, sep = "_"),
-                  dummy(training$HasCabin, sep = "_"),
-                  dummy(training$AgeGroup, sep = "_"),
-                  dummy(training$Embarked, sep = "_"),
-                  dummy(training$IsFamily, sep = "_"))
+training <- dummy.data.frame(training)
+testing  <- dummy.data.frame(testing)
+testing_ids <- testing$PassengerId
 
+training_dum <- training
+testing_dum <- testing
+
+training$Survived <- as.factor(training$Survived)
+testing  <- testing %>% mutate(Survived = factor(0, levels = c("0","1")))
 
 summarizeColumns(training)
 summarizeColumns(testing)
-
-```
-
-## Create and remove features features
-```{r}
-# Additional features
-training <- training %>%
-  mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
-         HasCabin = as.factor(grepl("[0-9]+", Cabin)),
-         AgeGroup = cut(Age, breaks = 5),
-         Family = SibSp + Parch, 
-         IsFamily = as.factor(Family > 0))
-
-testing <- testing %>%
-  mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
-         HasCabin = as.factor(grepl("[0-9]+", Cabin)),
-         AgeGroup = cut(Age, breaks = 5),
-         Family = SibSp + Parch, 
-         IsFamily = as.factor(Family > 0))
-
-# Remove some featires
-training <- training %>%
-  dplyr::select(-PassengerId, -Name, -Ticket)
-
-testing_ids <- testing$PassengerId
-
-testing <- testing %>%
-  dplyr::select( -Name, -Ticket)
-testing <- testing %>%
-  mutate(Survived = factor(x = 0,levels=c("0","1")))
 
 ```
 
@@ -127,10 +81,9 @@ training   <- training[inTrain,]
 
 Create tasks:
 ```{r}
-trainTask <- makeClassifTask(data = training, target = "Survived", 
-                             positive = "1", fixup.data = "no")
+trainTask <- makeClassifTask(data = training, target = "Survived", positive = "1")
 validTask <- makeClassifTask(data = validation, target = "Survived", positive = "1")
-testTask  <- makeClassifTask(data = testing, target = "Survived")
+# testTask  <- makeClassifTask(data = testing, target = "Survived", positive = "1")
 ```
 
 Normalize features:
@@ -148,20 +101,6 @@ plotFilterValues(im_feat,n.show = 20)
 ```
 
 ## Modeling
-### Quadratic Discriminant Analysis (QDA)
-
-```{r}
-qda.learner <- makeLearner("classif.qda", predict.type = "response")
-
-qdaModel <- train(qda.learner, trainTask)
-
-qpredict <- predict(qdaModel, testTask)
-
-submit <- data.frame(PassengerId = testing$PassengerId, Survived = qpredict$data$response)
-write.csv(submit, "submit_qda.csv",row.names = F)
-  
-```
-
 
 ### Decission tree
 ```{r}
@@ -201,12 +140,133 @@ stune$y
 t.tree <- setHyperPars(makeatree, par.vals = stune$x)
 
 #train the model
-t.rpart <- train(t.tree, trainTask)
+t.rpart <- mlr::train(t.tree, trainTask)
 getLearnerModel(t.rpart)
 
 
 #make predictions
 tpmodel_val <- predict(t.rpart, validTask)
-tpmodel <- predict(t.rpart, testTask)
+
+
+```
+
+### XGboost
+
+```{r}
+#load xgboost
+set.seed(1001)
+getParamSet("classif.xgboost")
+#make learner with inital parameters
+xg_set <- makeLearner("classif.xgboost", predict.type = "response")
+xg_set$par.vals <- list(
+  objective = "binary:logistic",
+  eval_metric = "error",
+  nrounds = 250
+)
+#define parameters for tuning
+xg_ps <- makeParamSet(
+  makeIntegerParam("nrounds",lower=200,upper=600),
+  makeIntegerParam("max_depth",lower=3,upper=20),
+  makeNumericParam("lambda",lower=0.55,upper=0.60),
+  makeNumericParam("eta", lower = 0.001, upper = 0.5),
+  makeNumericParam("subsample", lower = 0.10, upper = 0.80),
+  makeNumericParam("min_child_weight",lower=1,upper=5),
+  makeNumericParam("colsample_bytree",lower = 0.2,upper = 0.8)
+)
+#define search function
+rancontrol <- makeTuneControlRandom(maxit = 100L) #do 100 iterations
+#3 fold cross validation
+set_cv <- makeResampleDesc("CV",iters = 3L)
+#tune parameters
+xg_tune <- tuneParams(learner = xg_set, task = trainTask, resampling = set_cv,measures = acc,par.set = xg_ps, control = rancontrol, show.info = FALSE)
+#set parameters
+xg_new <- setHyperPars(learner = xg_set, par.vals = xg_tune$x)
+#train model
+xgmodel <- mlr::train(xg_new, trainTask)
+#test model
+predict.xg <- predict(xgmodel, validTask)
+confusionMatrix(predict.xg$data$response, validation$Survived)
+#submission file
+# submit <- data.frame(Loan_ID = test$Loan_ID, Loan_Status = predict.xg$data$response)
+#write.csv(submit, "submit7.csv",row.names = F)
+```
+
+## Random forest
+```{r}
+getParamSet("classif.randomForest")
+#create a learner
+rf <- makeLearner("classif.randomForest", predict.type = "response", par.vals = list(ntree = 200, mtry = 3))
+rf$par.vals <- list(
+  importance = TRUE
+)
+#set tunable parameters
+#grid search to find hyperparameters
+rf_param <- makeParamSet(
+  makeIntegerParam("ntree",lower = 50, upper = 500),
+  makeIntegerParam("mtry", lower = 3, upper = 10),
+  makeIntegerParam("nodesize", lower = 10, upper = 50)
+)
+#let's do random search for 50 iterations
+rancontrol <- makeTuneControlRandom(maxit = 50L)
+
+#set 3 fold cross validation
+set_cv <- makeResampleDesc("CV",iters = 3L)
+#hypertuning
+rf_tune <- tuneParams(learner = rf, resampling = set_cv, task = trainTask, par.set = rf_param, control = rancontrol, measures = acc, show.info = FALSE)
+
+rf.tree <- setHyperPars(rf, par.vals = rf_tune$x)
+#train a model
+rforest <- mlr::train(rf.tree, trainTask)
+
+#make predictions
+rfmodel <- predict(rforest, validTask)
+confusionMatrix(rfmodel$data$response, validation$Survived)
+
+# rfmodel <- predict(rforest, testTask)
+
+```
+
+# Remove some predictors
+```{r}
+im_feat <- generateFilterValuesData(trainTask, method = c("information.gain","chi.squared"))
+plotFilterValues(im_feat,n.show = 20)
+```
+
+```{r}
+top_task <- filterFeatures(trainTask, method = "rf.importance", abs = 10)
+
+```
+
+```{r}
+getParamSet("classif.randomForest")
+#create a learner
+rf <- makeLearner("classif.randomForest", predict.type = "response", par.vals = list(ntree = 200, mtry = 3))
+rf$par.vals <- list(
+  importance = TRUE
+)
+#set tunable parameters
+#grid search to find hyperparameters
+rf_param <- makeParamSet(
+  makeIntegerParam("ntree",lower = 50, upper = 500),
+  makeIntegerParam("mtry", lower = 3, upper = 6),
+  makeIntegerParam("nodesize", lower = 10, upper = 50)
+)
+#let's do random search for 50 iterations
+rancontrol <- makeTuneControlRandom(maxit = 50L)
+
+#set 3 fold cross validation
+set_cv <- makeResampleDesc("CV",iters = 3L)
+#hypertuning
+rf_tune <- tuneParams(learner = rf, resampling = set_cv, task = top_task, par.set = rf_param, control = rancontrol, measures = acc, show.info = FALSE)
+
+rf.tree <- setHyperPars(rf, par.vals = rf_tune$x)
+#train a model
+rforest <- mlr::train(rf.tree, top_task)
+
+#make predictions
+rfmodel <- predict(rforest, validTask)
+confusionMatrix(rfmodel$data$response, validation$Survived)
+
+# rfmodel <- predict(rforest, testTask)
 
 ```

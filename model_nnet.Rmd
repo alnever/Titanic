@@ -1,0 +1,80 @@
+---
+title: 'Titanic: Modeling with Nnet'
+author: "Aleksei Neverov"
+date: '14 февраля 2018 г '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(dplyr)
+library(nnet)
+```
+
+## Data Reading
+```{r}
+# Load training and test datasets
+training <- read.csv("train.csv", header = TRUE)
+testing  <- read.csv("test.csv", header = TRUE)
+```
+
+```{r}
+## Imputing NAs
+imp_train <- impute(training, classes = list(factor = imputeMode(), integer = imputeMean(), numeric = imputeMean()), dummy.classes = c("integer","factor"), dummy.type = "numeric")
+
+imp_test <- impute(testing, classes = list(factor = imputeMode(), integer = imputeMean(), numeric = imputeMean()), dummy.classes = c("integer","factor"), dummy.type = "numeric")
+
+training <- imp_train$data
+testing  <- imp_test$data
+```
+
+```{r}
+training <- training %>%
+  mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
+         HasCabin = as.factor(grepl("[0-9]+", Cabin)),
+         IsFamily = as.factor(SibSp + Parch > 0)) %>%
+  dplyr::select(-PassengerId, -Name, -Ticket, -Cabin)
+
+testing <- testing %>%
+  mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
+         HasCabin = as.factor(grepl("[0-9]+", Cabin)),
+         IsFamily = as.factor(SibSp + Parch > 0)) %>%
+  dplyr::select( -Name, -Ticket, -Cabin)
+
+training <- dummy.data.frame(training)
+testing  <- dummy.data.frame(testing)
+testing_ids <- testing$PassengerId
+
+training$Survived <- as.factor(training$Survived)
+testing  <- testing %>% mutate(Survived = factor(0, levels = c("0","1")))
+```
+
+## Machine learning
+
+Split the training dataset:
+```{r}
+set.seed(123)
+inTrain <- createDataPartition(training$Survived, p = .6, list = FALSE)
+
+validation <- training[-inTrain,]
+training   <- training[inTrain,]
+```
+
+```{r}
+acc = data.frame(NumerIter = 0, Acc = 0)
+
+for (i in seq(10,300, by = 10)) {
+  nn_model <- nnet(Survived ~ ., data = training, size = round(nrow(training) / 30))
+    # ,
+    #                    rang=(1/max(dplyr::select(training, -Survived))), decay=5e-4, maxit=i,
+    #                varbose = FALSE)
+  
+  nn_predict <- factor(predict(nn_model, newdata = validation, type = "class"))
+  cm <- confusionMatrix(nn_predict, validation$Survived)
+  acc <- rbind(acc, data.frame(NumerIter = i, Acc = cm$overall[1]))
+}
+```

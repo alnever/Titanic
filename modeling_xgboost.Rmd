@@ -1,0 +1,92 @@
+---
+title: 'Titanic: Modeling with XGBoost'
+author: "Aleksei Neverov"
+date: '16 февраля 2018 г '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(mlr)
+library(rJava)
+library(FSelector)
+library(dummies)
+library(caret)
+library(rpart)
+library(xgboost)
+```
+
+## Data Reading
+```{r}
+# Load training and test datasets
+training <- read.csv("train.csv", header = TRUE)
+testing  <- read.csv("test.csv", header = TRUE)
+```
+
+```{r}
+summary(training)
+```
+
+## Imputing NAs
+```{r}
+imp_train <- impute(training, classes = list(factor = imputeMode(), integer = imputeMean(), numeric = imputeMean()), dummy.classes = c("integer","factor"), dummy.type = "numeric")
+
+imp_test <- impute(testing, classes = list(factor = imputeMode(), integer = imputeMean(), numeric = imputeMean()), dummy.classes = c("integer","factor"), dummy.type = "numeric")
+
+training <- imp_train$data
+testing  <- imp_test$data
+```
+
+```{r}
+training <- training %>%
+  mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
+         HasCabin = as.factor(grepl("[0-9]+", Cabin)),
+         IsFamily = as.factor(SibSp + Parch > 0)) %>%
+  dplyr::select(-PassengerId, -Name, -Ticket, -Cabin)
+
+testing <- testing %>%
+  mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
+         HasCabin = as.factor(grepl("[0-9]+", Cabin)),
+         IsFamily = as.factor(SibSp + Parch > 0)) %>%
+  dplyr::select( -Name, -Ticket, -Cabin)
+
+training <- dummy.data.frame(training)
+testing  <- dummy.data.frame(testing)
+testing_ids <- testing$PassengerId
+
+training_dum <- training
+testing_dum <- testing
+
+training$Survived <- as.factor(training$Survived)
+testing  <- testing %>% mutate(Survived = factor(0, levels = c("0","1")))
+
+summarizeColumns(training)
+summarizeColumns(testing)
+
+```
+
+## Machine learning
+
+Split the training dataset:
+```{r}
+set.seed(123)
+inTrain <- createDataPartition(training$Survived, p = .6, list = FALSE)
+
+validation <- training[-inTrain,]
+training   <- training[inTrain,]
+```
+
+```{r}
+training_matrix = as.matrix(dplyr::select(training, -Survived))
+training_target = as.numeric(training$Survived) - 1
+model <- xgboost(data = training_matrix, label = training_target, max.depth = 5, eta = 1, nthread = 2, nround = 300, objective = "binary:logistic")
+
+valid_matrix = as.matrix(dplyr::select(validation, -Survived))
+prediction <- as.numeric(predict(model, valid_matrix) > .5)
+
+confusionMatrix(prediction, as.numeric(validation$Survived)-1)
+```
