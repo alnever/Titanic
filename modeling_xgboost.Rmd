@@ -105,9 +105,13 @@ train_xgb_matrix = xgb.DMatrix(data = as.matrix(dplyr::select(training, -Survive
 test_xgb_matrix  = xgb.DMatrix(data = as.matrix(dplyr::select(validation, -Survived)), 
                                label = as.numeric(validation$Survived) - 1)
 watchlist <- list(train = train_xgb_matrix, test=test_xgb_matrix)
-bst <- xgb.train(data=train_xgb_matrix, max.depth=3, eta=1, nthread = 2, nround=20, watchlist=watchlist, eval.metric = "error", eval.metric = "logloss", objective = "binary:logistic")
-prediction <- as.numeric(predict(model, as.matrix(dplyr::select(validation, -Survived))) > .5)
+bst <- xgb.train(data=train_xgb_matrix, max.depth=2, eta=1, nthread = 2, nround=10, watchlist=watchlist, eval.metric = "error", eval.metric = "logloss", objective = "binary:logistic")
+prediction <- as.numeric(predict(bst, as.matrix(dplyr::select(validation, -Survived))) > .5)
 
 confusionMatrix(prediction, as.numeric(validation$Survived)-1)
+
+importance_matrix <- xgb.importance(model = bst)
+print(importance_matrix)
+xgb.plot.importance(importance_matrix = importance_matrix)
 # xgb.dump(bst, with.stats = T)
 ```
