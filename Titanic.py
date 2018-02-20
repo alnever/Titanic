@@ -10,7 +10,16 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.feature_selection import SelectFromModel
 from sklearn import svm
 from sklearn.linear_model import SGDClassifier
+from xgboost import XGBClassifier
 
+def model_XGBoost(train_x, train_y, test_x, test_y, n_est = 100):
+
+    model = XGBClassifier(n_estimators=n_est, learning_rate=0.1)
+    model.fit(train_x, train_y, early_stopping_rounds = 5, eval_set=[(test_x, test_y)], verbose=False)
+    sc = model.score(test_x, test_y)    
+    prediction = model.predict(test_x)
+    mae = mean_absolute_error(test_y, prediction)
+    return (sc, mae, prediction, model)
 
 
 def model_GBC(train_x, train_y, test_x, test_y, n_est = 100):
@@ -193,3 +202,18 @@ y = make_prediction(gbs_model, new_test, test_ids)
 print(y)
 
 print(all(x == y))
+
+print("\n\nXGBoost")
+maes = []
+for i in range(100,500,20):
+    (acc, mae, prediction, model) = model_XGBoost(train_x, train_y, test_x, test_y, i)
+    print("XGBoost Est =%d\t Acc = %f\t MAE = %f"%(i, acc, mae))
+    maes.append([i, mae, acc])
+    
+maes = np.array(maes)
+maes = maes[ maes[:,1] == min(maes[:,1]) ]
+maes = maes[ maes[:,0] == min(maes[:,0]) ]
+
+(mae, predictions) = model_XGBoost(train_x, train_y, test_x, test_y, maes[0,0])
+
+print("Using Gradient Boost with %d steps:\t MAE =\t %d" %(maes[0,0],mae))
