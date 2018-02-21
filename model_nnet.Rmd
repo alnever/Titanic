@@ -13,6 +13,10 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 library(dplyr)
 library(nnet)
+library(mlr)
+library(dummies)
+library(rpart)
+library(caret)
 ```
 
 ## Data Reading
@@ -66,15 +70,22 @@ training   <- training[inTrain,]
 
 ```{r}
 acc = data.frame(NumerIter = 0, Acc = 0)
+```
 
-for (i in seq(10,300, by = 10)) {
+```{r echo=FALSE}
+# for (i in seq(10,300, by = 10)) {
   nn_model <- nnet(Survived ~ ., data = training, size = round(nrow(training) / 30))
     # ,
     #                    rang=(1/max(dplyr::select(training, -Survived))), decay=5e-4, maxit=i,
     #                varbose = FALSE)
-  
+```
+
+```{r}  
   nn_predict <- factor(predict(nn_model, newdata = validation, type = "class"))
   cm <- confusionMatrix(nn_predict, validation$Survived)
-  acc <- rbind(acc, data.frame(NumerIter = i, Acc = cm$overall[1]))
-}
+  # acc <- rbind(acc, data.frame(NumerIter = i, Acc = cm$overall[1]))
+  
+  cm
+  #aCC
+# }
 ```
