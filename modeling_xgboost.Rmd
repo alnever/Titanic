@@ -95,23 +95,51 @@ confusionMatrix(prediction, as.numeric(validation$Survived)-1)
 ```{r}
 set.seed(123)
 
-inTrain <- createDataPartition(source$Survived, p = .8, list = FALSE)
+# inTrain <- createDataPartition(source$Survived, p = .8, list = FALSE)
 
-validation <- source[-inTrain,]
-training   <- source[inTrain,]
+# validation <- source[-inTrain,]
+# training   <- source[inTrain,]
 
 train_xgb_matrix = xgb.DMatrix(data = as.matrix(dplyr::select(training, -Survived)), 
                                label = as.numeric(training$Survived) - 1)
-test_xgb_matrix  = xgb.DMatrix(data = as.matrix(dplyr::select(validation, -Survived)), 
-                               label = as.numeric(validation$Survived) - 1)
+#test_xgb_matrix  = xgb.DMatrix(data = as.matrix(dplyr::select(validation, -Survived)), 
+#                               label = as.numeric(validation$Survived) - 1)
+test_xgb_matrix = train_xgb_matrix
+
 watchlist <- list(train = train_xgb_matrix, test=test_xgb_matrix)
-bst <- xgb.train(data=train_xgb_matrix, max.depth=2, eta=1, nthread = 2, nround=10, watchlist=watchlist, eval.metric = "error", eval.metric = "logloss", objective = "binary:logistic")
-prediction <- as.numeric(predict(bst, as.matrix(dplyr::select(validation, -Survived))) > .5)
 
-confusionMatrix(prediction, as.numeric(validation$Survived)-1)
+params <- list(booster = "gbtree", 
+               objective = "binary:logistic", 
+               eta=.095, 
+               gamma=0, 
+               max_depth=29, 
+               min_child_weight=0.01, 
+               subsample=1, 
+               colsample_bytree=1)
 
-importance_matrix <- xgb.importance(model = bst)
-print(importance_matrix)
-xgb.plot.importance(importance_matrix = importance_matrix)
+xgbcv <- xgb.cv( params = params, 
+                 data = train_xgb_matrix, 
+                 nrounds = 100, 
+                 nfold = 10, 
+                 showsd = T, 
+                 stratified = T, 
+                 print.every.n = 10, 
+                 early.stop.round = 100, 
+                 maximize = F)
+
+bst <- xgb.train (params = params, 
+                  data = train_xgb_matrix, 
+                  nrounds = 100, 
+                  watchlist = watchlist, 
+                  print.every.n = 10, 
+                  early.stop.round = 100, 
+                  maximize = F , 
+                  eval_metric = "error")
+
+prediction <- as.numeric(predict(bst, as.matrix(dplyr::select(testing, -Survived))) > .5)
+res <- data.frame(PassengerId = testing_ids, Survived = prediction)
+
+write.csv(res, "submission3.csv", sep=",", row.names = FALSE)
+# xgb.plot.importance(importance_matrix = importance_matrix)
 # xgb.dump(bst, with.stats = T)
 ```
