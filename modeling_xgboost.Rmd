@@ -25,6 +25,8 @@ library(xgboost)
 # Load training and test datasets
 training <- read.csv("train.csv", header = TRUE)
 testing  <- read.csv("test.csv", header = TRUE)
+training_res <- training$Survived
+testing_ids <- testing$PassengerId
 ```
 
 ```{r}
@@ -46,86 +48,72 @@ training <- training %>%
   mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
          HasCabin = as.factor(grepl("[0-9]+", Cabin)),
          IsFamily = as.factor(SibSp + Parch > 0)) %>%
-  dplyr::select(-PassengerId, -Name, -Ticket, -Cabin)
+  dplyr::select(-PassengerId, -Name, -Ticket, -Cabin, -Survived)
 
 testing <- testing %>%
   mutate(Deck = as.factor(substr(as.character(Cabin), 0, 1)),
          HasCabin = as.factor(grepl("[0-9]+", Cabin)),
          IsFamily = as.factor(SibSp + Parch > 0)) %>%
-  dplyr::select( -Name, -Ticket, -Cabin)
+  dplyr::select(-PassengerId, -Name, -Ticket, -Cabin)
 
 training <- dummy.data.frame(training)
 testing  <- dummy.data.frame(testing)
-testing_ids <- testing$PassengerId
 
 training_dum <- training
 testing_dum <- testing
 
-training$Survived <- as.factor(training$Survived)
-testing  <- testing %>% mutate(Survived = factor(0, levels = c("0","1")))
 
-summarizeColumns(training)
-summarizeColumns(testing)
+testing <- mutate(testing, Embarked = 0, DeckT = 0)
+
+testing <- testing[,names(training)]
+
+# training$Survived <- as.factor(training$Survived)
+# testing  <- testing %>% mutate(Survived = factor(0, levels = c("0","1")))
 
 ```
 
 ## Machine learning
 
-Split the training dataset:
-```{r}
-set.seed(123)
-source <- training
-inTrain <- createDataPartition(source$Survived, p = .6, list = FALSE)
-
-validation <- training[-inTrain,]
-training   <- training[inTrain,]
-```
-
-```{r}
-training_matrix = as.matrix(dplyr::select(training, -Survived))
-training_target = as.numeric(training$Survived) - 1
-model <- xgboost(data = training_matrix, label = training_target, max.depth = 5, eta = 1, nthread = 2, nround = 300, objective = "binary:logistic")
-
-valid_matrix = as.matrix(dplyr::select(validation, -Survived))
-prediction <- as.numeric(predict(model, valid_matrix) > .5)
-
-confusionMatrix(prediction, as.numeric(validation$Survived)-1)
-```
-
 ```{r}
 set.seed(123)
 
-# inTrain <- createDataPartition(source$Survived, p = .8, list = FALSE)
 
-# validation <- source[-inTrain,]
-# training   <- source[inTrain,]
-
-train_xgb_matrix = xgb.DMatrix(data = as.matrix(dplyr::select(training, -Survived)), 
-                               label = as.numeric(training$Survived) - 1)
-#test_xgb_matrix  = xgb.DMatrix(data = as.matrix(dplyr::select(validation, -Survived)), 
-#                               label = as.numeric(validation$Survived) - 1)
+train_xgb_matrix = xgb.DMatrix(data = as.matrix(training), label = training_res)
 test_xgb_matrix = train_xgb_matrix
 
 watchlist <- list(train = train_xgb_matrix, test=test_xgb_matrix)
 
-params <- list(booster = "gbtree", 
-               objective = "binary:logistic", 
-               eta=.095, 
-               gamma=0, 
-               max_depth=29, 
-               min_child_weight=0.01, 
-               subsample=1, 
-               colsample_bytree=1)
 
-xgbcv <- xgb.cv( params = params, 
-                 data = train_xgb_matrix, 
-                 nrounds = 100, 
-                 nfold = 10, 
-                 showsd = T, 
-                 stratified = T, 
-                 print.every.n = 10, 
-                 early.stop.round = 100, 
-                 maximize = F)
+searchGrid = expand.grid(subsample = c(.5, .75, 1),
+                         colsample_bytree = c(0.6, 0.8, 1),
+                         ntrees = seq(300,400, by = 20),
+                         nfolds = 3:10,
+                         learning_rate = seq(.05, .09, by = .01),
+                         depth = 20:30)
+
+rmseHyperParams <- apply(searchGrid, 1, function(parameterList){
+  curSubSample <- parameterList[["subsample"]]
+  curColSample <- parameterList[["colsample_bytree"]]
+  ntrees       <- parameterList[["ntrees"]]
+  nfolds       <- parameterList[["nfolds"]]
+  rate         <- parameterList[["learning_rate"]]
+  depth        <- parameterList[["depth"]]
+  
+  xgbcv <- xgb.cv(data =  train_xgb_matrix, nrounds = ntrees, nfold = nfolds, showsd = TRUE, 
+                          metrics = "error", verbose = TRUE, "eval_metric" = "error", "booster" = "gbtree",
+                          "objective" = "binary:logistic", "max.depth" = depth, "eta" = rate,                               
+                          "subsample" = curSubSample, "colsample_bytree" = curColSample
+                  )
+  
+  xvalidationScores <- as.data.frame(xgbcv)
+  
+  rmse <- tail(xvalidationScores$test.rmse.mean, 1)
+  error <- tail(xvalidationScores$test.error.mean, 1)
+
+  return(c(rmse, error, curSubSample, curColSample, ntrees, nfolds, rate, depth))
+
+})
+
 
 bst <- xgb.train (params = params, 
                   data = train_xgb_matrix, 
@@ -140,6 +128,4 @@ prediction <- as.numeric(predict(bst, as.matrix(dplyr::select(testing, -Survived
 res <- data.frame(PassengerId = testing_ids, Survived = prediction)
 
 write.csv(res, "submission3.csv", sep=",", row.names = FALSE)
-# xgb.plot.importance(importance_matrix = importance_matrix)
-# xgb.dump(bst, with.stats = T)
 ```
